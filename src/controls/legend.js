@@ -1,29 +1,37 @@
-import { Component, Button, Element as El, ToggleGroup, dom } from '../ui';
+import {
+  Component, Button, Element as El, ToggleGroup, dom
+} from '../ui';
 import imageSource from './legend/imagesource';
 import Overlays from './legend/overlays';
+import LayerProperties from './legend/overlayproperties';
 
 const Legend = function Legend(options = {}) {
   const {
     cls: clsSettings = '',
     style: styleSettings = {},
+    autoHide = 'never',
     expanded = true,
     contentCls,
     contentStyle,
-    addControl = false,
-    name = 'legend'
+    turnOffLayersControl = false,
+    name = 'legend',
+    labelOpacitySlider = ''
   } = options;
 
   let viewer;
   let target;
   let mainContainerCmp;
+  let overlaysCmp;
   let mainContainerEl;
   const backgroundLayerButtons = [];
   let toggleGroup;
   let layerSwitcherEl;
+  let closeButton;
   let layerButton;
   let layerButtonEl;
   let isExpanded;
-  const cls = `${clsSettings} control bottom-right box overflow-hidden flex row o-legend`.trim();
+  let toolsCmp;
+  const cls = `${clsSettings} control bottom-right box overflow-hidden inline-block row o-legend`.trim();
   const style = dom.createStyle(Object.assign({}, { width: 'auto' }, styleSettings));
 
   const addBackgroundButton = function addBackgroundButton(layer) {
@@ -32,10 +40,21 @@ const Legend = function Legend(options = {}) {
     backgroundLayerButtons.push(Button({
       icon,
       cls: 'round smallest border icon-small',
+      title: layer.get('title'),
       state: layer.get('visible') ? 'active' : undefined,
       methods: {
         active: () => layer.setVisible(true),
         initial: () => layer.setVisible(false)
+      },
+      click() {
+        const slided = document.getElementById(overlaysCmp.slidenav.getId()).classList.contains('slide-secondary');
+        if (this.getState() === 'active' && !slided) {
+          const layerProperties = LayerProperties({ layer, viewer, parent: this });
+          overlaysCmp.slidenav.setSecondary(layerProperties);
+          overlaysCmp.slidenav.slideToSecondary();
+        } else if (slided) {
+          overlaysCmp.slidenav.slideToMain();
+        }
       }
     }));
   };
@@ -59,6 +78,15 @@ const Legend = function Legend(options = {}) {
     mainContainerEl.style.maxHeight = `${calcMaxHeight(getTargetHeight())}px`;
   };
 
+  const turnOffAllLayers = function turnOffAllLayers() {
+    const layers = viewer.getLayersByProperty('visible', true);
+    layers.forEach((el) => {
+      if (!(['none', 'background'].includes(el.get('group')))) {
+        el.setVisible(false);
+      }
+    });
+  };
+
   const divider = El({
     cls: 'divider margin-x-small',
     style: {
@@ -68,17 +96,18 @@ const Legend = function Legend(options = {}) {
     }
   });
 
-  const addButton = Button({
-    cls: 'round compact primary icon-small margin-x-smaller',
+  const turnOffLayersButton = Button({
+    cls: 'round compact icon-small margin-x-smaller\'title=\'Släck alla lager',
     click() {
-      viewer.dispatch('active:layermanager');
+      viewer.dispatch('active:turnofflayers');
     },
     style: {
-      'align-self': 'center'
+      'align-self': 'center',
+      'padding-right': '6px'
     },
-    icon: '#o_add_24px',
+    icon: '#ic_visibility_off_24px',
     iconStyle: {
-      fill: '#fff'
+      fill: '#7a7a7a'
     }
   });
 
@@ -88,24 +117,53 @@ const Legend = function Legend(options = {}) {
       layerSwitcherEl.classList.remove('fade-in');
       layerButtonEl.classList.add('fade-in');
       layerButtonEl.classList.remove('fade-out');
+      closeButton.setState('hidden');
     } else {
       layerSwitcherEl.classList.remove('fade-out');
       layerSwitcherEl.classList.add('fade-in');
       layerButtonEl.classList.remove('fade-out');
       layerButtonEl.classList.add('fade-in');
+      closeButton.setState('initial');
     }
     layerButtonEl.classList.toggle('faded');
     layerSwitcherEl.classList.toggle('faded');
     isExpanded = !isExpanded;
   };
 
+  const onMapClick = function onMapClick() {
+    if (autoHide === 'always' && isExpanded) {
+      toggleVisibility();
+    } else if (autoHide === 'mobile' && isExpanded) {
+      const size = viewer.getSize();
+      if (size === 'm' || size === 's' || size === 'xs') {
+        toggleVisibility();
+      }
+    }
+  };
+
   return Component({
     name,
+    addButtonToTools(button) {
+      const toolsEl = document.getElementById(toolsCmp.getId());
+      toolsEl.classList.remove('hidden');
+      if (toolsCmp.getComponents().length > 0) {
+        toolsEl.style.justifyContent = 'space-between';
+        toolsEl.insertBefore(dom.html(divider.render()), toolsEl.firstChild);
+        toolsEl.insertBefore(dom.html(button.render()), toolsEl.firstChild);
+      } else {
+        toolsEl.appendChild(dom.html(button.render()));
+      }
+      toolsCmp.addComponent(button);
+      button.onRender();
+    },
     onInit() {
       this.on('render', this.onRender);
     },
     onAdd(evt) {
       viewer = evt.target;
+      if (turnOffLayersControl) {
+        viewer.on('active:turnofflayers', turnOffAllLayers);
+      }
       const backgroundLayers = viewer.getLayersByProperty('group', 'background').reverse();
       addBackgroundButtons(backgroundLayers);
       toggleGroup = ToggleGroup({
@@ -115,6 +173,7 @@ const Legend = function Legend(options = {}) {
 
       this.render();
       this.dispatch('render');
+      viewer.getMap().on('click', onMapClick);
     },
     onRender() {
       mainContainerEl = document.getElementById(mainContainerCmp.getId());
@@ -125,25 +184,43 @@ const Legend = function Legend(options = {}) {
         toggleVisibility();
       });
       window.addEventListener('resize', updateMaxHeight);
+      if (turnOffLayersControl) this.addButtonToTools(turnOffLayersButton);
     },
     render() {
       const size = viewer.getSize();
       isExpanded = !size && expanded;
       target = document.getElementById(viewer.getMain().getId());
       const maxHeight = calcMaxHeight(getTargetHeight());
-      const overlaysCmp = Overlays({ viewer, cls: contentCls, style: contentStyle });
-      const baselayerCmps = addControl ? [toggleGroup, divider, addButton] : [toggleGroup];
+      overlaysCmp = Overlays({
+        viewer, cls: contentCls, style: contentStyle, labelOpacitySlider
+      });
+      const baselayerCmps = [toggleGroup];
+
+      toolsCmp = El({
+        cls: 'flex padding-small no-shrink hidden',
+        style: {
+          'background-color': '#fff',
+          'justify-content': 'flex-end',
+          height: '40px'
+        }
+      });
+
       const baselayersCmp = El({
         cls: 'flex padding-small no-shrink',
         style: {
           'background-color': '#fff',
-          height: '50px'
+          height: '50px',
+          'padding-right': '30px',
+          'border-top': '1px solid #dbdbdb'
         },
         components: baselayerCmps
       });
+
+      const mainContainerComponents = [overlaysCmp, toolsCmp, baselayersCmp];
+
       mainContainerCmp = El({
         cls: 'flex column overflow-hidden relative',
-        components: [overlaysCmp, baselayersCmp],
+        components: mainContainerComponents,
         style: {
           'max-height': `${maxHeight}px`
         }
@@ -162,7 +239,9 @@ const Legend = function Legend(options = {}) {
       const layerButtonCls = isExpanded ? ' faded' : '';
       layerButton = Button({
         icon: '#ic_layers_24px',
-        cls: `control icon-small medium round absolute bottom-right${layerButtonCls}`,
+        tooltipText: 'Lager',
+        tooltipPlacement: 'west',
+        cls: `control icon-small medium round absolute light bottom-right${layerButtonCls}`,
         click() {
           if (!isExpanded) {
             overlaysCmp.dispatch('expand');
@@ -170,8 +249,21 @@ const Legend = function Legend(options = {}) {
           }
         }
       });
+      const closeButtonState = isExpanded ? 'initial' : 'hidden';
+      closeButton = Button({
+        cls: 'icon-smaller small round absolute margin-bottom margin-right grey-lightest bottom-right z-index-top',
+        icon: '#ic_close_24px',
+        state: closeButtonState,
+        validStates: ['initial', 'hidden'],
+        click() {
+          toggleVisibility();
+        }
+      });
       this.addComponent(layerButton);
-      const el = dom.html(layerButton.render());
+      this.addComponent(closeButton);
+      let el = dom.html(layerButton.render());
+      target.appendChild(el);
+      el = dom.html(closeButton.render());
       target.appendChild(el);
     }
   });
